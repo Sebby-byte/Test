@@ -1,5 +1,7 @@
 package com.example.bevision;
 
+import java.util.List;
+
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -24,31 +26,40 @@ import org.joml.Matrix4f;
 import org.lwjgl.glfw.GLFW;
 
 public class BEVisionClient implements ClientModInitializer {
-    private static boolean enabled = true;
+    private static boolean enabled = true; // block entity highlights
     private static int range = 64; // blocks
     private static final float ALPHA = 0.35f;
 
-    private static KeyBinding toggleKey, rangeUpKey, rangeDownKey;
+    private static KeyBinding toggleKey, menuKey, rangeUpKey, rangeDownKey;
+
+    public static int getRange() {
+        return range;
+    }
 
     @Override
     public void onInitializeClient() {
         toggleKey = reg("key.bevision.toggle", GLFW.GLFW_KEY_G);
+        menuKey = reg("key.bevision.menu", GLFW.GLFW_KEY_B);
         rangeUpKey = reg("key.bevision.range_up", GLFW.GLFW_KEY_EQUAL);
         rangeDownKey = reg("key.bevision.range_down", GLFW.GLFW_KEY_MINUS);
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (toggleKey.wasPressed()) {
                 enabled = !enabled;
-                msg(client, "Block Entity Vision: " + (enabled ? "ON" : "OFF"));
+                msg(client, "Block entity highlights: " + (enabled ? "ON" : "OFF"));
+            }
+            while (menuKey.wasPressed()) {
+                if (client.world != null) client.setScreen(new BlockFinderScreen());
             }
             while (rangeUpKey.wasPressed()) {
                 range = Math.min(256, range + 16);
-                msg(client, "BE Vision range: " + range);
+                msg(client, "Vision range: " + range);
             }
             while (rangeDownKey.wasPressed()) {
                 range = Math.max(16, range - 16);
-                msg(client, "BE Vision range: " + range);
+                msg(client, "Vision range: " + range);
             }
+            BlockFinder.tick(client);
         });
 
         WorldRenderEvents.AFTER_TRANSLUCENT.register(BEVisionClient::render);
@@ -79,44 +90,57 @@ public class BEVisionClient implements ClientModInitializer {
     }
 
     private static void render(WorldRenderContext ctx) {
-        if (!enabled) return;
         MinecraftClient mc = MinecraftClient.getInstance();
         ClientWorld world = mc.world;
         MatrixStack matrices = ctx.matrixStack();
         if (world == null || mc.player == null || matrices == null) return;
 
+        List<BlockFinder.Hit> hits = BlockFinder.results();
+        if (!enabled && hits.isEmpty()) return;
+
         Vec3d cam = ctx.camera().getPos();
         Matrix4f m = matrices.peek().getPositionMatrix();
-        double rangeSq = (double) range * range;
-        int chunkRadius = (range >> 4) + 1;
-        int pcx = mc.player.getBlockPos().getX() >> 4;
-        int pcz = mc.player.getBlockPos().getZ() >> 4;
 
         BufferBuilder buf = Tessellator.getInstance()
                 .begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
 
-        for (int dx = -chunkRadius; dx <= chunkRadius; dx++) {
-            for (int dz = -chunkRadius; dz <= chunkRadius; dz++) {
-                WorldChunk chunk = world.getChunkManager().getWorldChunk(pcx + dx, pcz + dz);
-                if (chunk == null) continue;
+        // 1) block entities (chests, furnaces, spawners...)
+        if (enabled) {
+            double rangeSq = (double) range * range;
+            int chunkRadius = (range >> 4) + 1;
+            int pcx = mc.player.getBlockPos().getX() >> 4;
+            int pcz = mc.player.getBlockPos().getZ() >> 4;
 
-                for (BlockEntity be : chunk.getBlockEntities().values()) {
-                    BlockPos pos = be.getPos();
-                    if (pos.getSquaredDistance(cam) > rangeSq) continue;
+            for (int dx = -chunkRadius; dx <= chunkRadius; dx++) {
+                for (int dz = -chunkRadius; dz <= chunkRadius; dz++) {
+                    WorldChunk chunk = world.getChunkManager().getWorldChunk(pcx + dx, pcz + dz);
+                    if (chunk == null) continue;
 
-                    int rgb = colorFor(be);
-                    if (rgb < 0) continue;
+                    for (BlockEntity be : chunk.getBlockEntities().values()) {
+                        BlockPos pos = be.getPos();
+                        if (pos.getSquaredDistance(cam) > rangeSq) continue;
 
-                    VoxelShape shape = be.getCachedState().getOutlineShape(world, pos);
-                    Box box = shape.isEmpty() ? new Box(0, 0, 0, 1, 1, 1) : shape.getBoundingBox();
-                    box = box.offset(pos).expand(0.002).offset(-cam.x, -cam.y, -cam.z);
+                        int rgb = colorFor(be);
+                        if (rgb < 0) continue;
 
-                    addBox(buf, m, box,
-                            ((rgb >> 16) & 255) / 255f,
-                            ((rgb >> 8) & 255) / 255f,
-                            (rgb & 255) / 255f);
+                        VoxelShape shape = be.getCachedState().getOutlineShape(world, pos);
+                        Box box = shape.isEmpty() ? new Box(0, 0, 0, 1, 1, 1) : shape.getBoundingBox();
+                        box = box.offset(pos).expand(0.002).offset(-cam.x, -cam.y, -cam.z);
+
+                        addBox(buf, m, box,
+                                ((rgb >> 16) & 255) / 255f,
+                                ((rgb >> 8) & 255) / 255f,
+                                (rgb & 255) / 255f);
+                    }
                 }
             }
+        }
+
+        // 2) blocks picked in the Block Finder menu
+        for (BlockFinder.Hit h : hits) {
+            Box box = new Box(h.x(), h.y(), h.z(), h.x() + 1, h.y() + 1, h.z() + 1)
+                    .expand(0.002).offset(-cam.x, -cam.y, -cam.z);
+            addBox(buf, m, box, h.r(), h.g(), h.b());
         }
 
         BuiltBuffer built = buf.endNullable();
@@ -139,18 +163,12 @@ public class BEVisionClient implements ClientModInitializer {
         float x1 = (float) bx.minX, y1 = (float) bx.minY, z1 = (float) bx.minZ;
         float x2 = (float) bx.maxX, y2 = (float) bx.maxY, z2 = (float) bx.maxZ;
 
-        // bottom
-        quad(b, m, x1,y1,z1, x2,y1,z1, x2,y1,z2, x1,y1,z2, r,g,bl);
-        // top
-        quad(b, m, x1,y2,z1, x1,y2,z2, x2,y2,z2, x2,y2,z1, r,g,bl);
-        // north
-        quad(b, m, x1,y1,z1, x1,y2,z1, x2,y2,z1, x2,y1,z1, r,g,bl);
-        // south
-        quad(b, m, x1,y1,z2, x2,y1,z2, x2,y2,z2, x1,y2,z2, r,g,bl);
-        // west
-        quad(b, m, x1,y1,z1, x1,y1,z2, x1,y2,z2, x1,y2,z1, r,g,bl);
-        // east
-        quad(b, m, x2,y1,z1, x2,y2,z1, x2,y2,z2, x2,y1,z2, r,g,bl);
+        quad(b, m, x1,y1,z1, x2,y1,z1, x2,y1,z2, x1,y1,z2, r,g,bl); // bottom
+        quad(b, m, x1,y2,z1, x1,y2,z2, x2,y2,z2, x2,y2,z1, r,g,bl); // top
+        quad(b, m, x1,y1,z1, x1,y2,z1, x2,y2,z1, x2,y1,z1, r,g,bl); // north
+        quad(b, m, x1,y1,z2, x2,y1,z2, x2,y2,z2, x1,y2,z2, r,g,bl); // south
+        quad(b, m, x1,y1,z1, x1,y1,z2, x1,y2,z2, x1,y2,z1, r,g,bl); // west
+        quad(b, m, x2,y1,z1, x2,y2,z1, x2,y2,z2, x2,y1,z2, r,g,bl); // east
     }
 
     private static void quad(BufferBuilder b, Matrix4f m,

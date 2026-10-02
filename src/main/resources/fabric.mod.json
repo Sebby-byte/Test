@@ -3,7 +3,7 @@
   "id": "bevision",
   "version": "${version}",
   "name": "Block Entity Vision",
-  "description": "Highlights block entities (chests, furnaces, spawners...) through walls. Client side only.",
+  "description": "Highlights block entities and any blocks you pick from a menu, through walls. Client side only.",
   "authors": ["You"],
   "license": "MIT",
   "environment": "client",

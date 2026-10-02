@@ -1,5 +1,6 @@
 {
-  "key.bevision.toggle": "Toggle Block Entity Vision",
+  "key.bevision.toggle": "Toggle Block Entity Highlights",
+  "key.bevision.menu": "Open Block Finder Menu",
   "key.bevision.range_up": "Increase Range",
   "key.bevision.range_down": "Decrease Range",
   "category.bevision": "Block Entity Vision"
