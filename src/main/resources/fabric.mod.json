@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "bevision",
+  "version": "${version}",
+  "name": "Block Entity Vision",
+  "description": "Highlights block entities (chests, furnaces, spawners...) through walls. Client side only.",
+  "authors": ["You"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.example.bevision.BEVisionClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
