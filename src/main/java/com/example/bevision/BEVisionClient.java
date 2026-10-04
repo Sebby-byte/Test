@@ -3,28 +3,18 @@ package com.example.bevision;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.OptionalDouble;
 
-import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
-import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
-import com.mojang.renderpearl.api.pipeline.RenderPipeline;
-import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.platform.InputConstants;
-import com.mojang.renderpearl.api.commands.RenderPass;
-import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.renderpearl.api.textures.GpuTextureView;
+import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
-import com.mojang.renderpearl.api.vertex.VertexFormat;
-import org.joml.Matrix4f;
-import org.joml.Matrix4fc;
-import org.joml.Vector3f;
-import org.joml.Vector4f;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.RenderPipelines;
-import net.minecraft.client.renderer.StagedVertexBuffer;
+import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.client.renderer.rendertype.RenderSetup;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
@@ -48,7 +38,6 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
 import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelExtractionContext;
@@ -58,7 +47,12 @@ import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 
 /**
  * Draws translucent boxes through walls on nearby block entities and on blocks picked in the
- * Block Finder menu. Rendering follows the Fabric docs "Rendering in the World" example (26.2+).
+ * Block Finder menu.
+ *
+ * In 26.3 you may not upload buffers while a render pass is open, so instead of drawing by hand
+ * we submit custom geometry to the game's own submit-node renderer (COLLECT_SUBMITS) and let the
+ * game draw it at the right time. The custom render type below has the depth test removed,
+ * which is what makes the boxes show through walls.
  */
 public class BEVisionClient implements ClientModInitializer {
     public static final String MOD_ID = "bevision";
@@ -73,16 +67,15 @@ public class BEVisionClient implements ClientModInitializer {
                     .build()
     );
 
-    private static final Vector4f COLOR_MODULATOR = new Vector4f(1f, 1f, 1f, 1f);
-    private static final Vector3f MODEL_OFFSET = new Vector3f();
-    private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
-    private static final StagedVertexBuffer STAGED_BUFFER =
-            new StagedVertexBuffer(() -> MOD_ID + " buffer", RenderType.SMALL_BUFFER_SIZE * 4);
+    private static final RenderType THROUGH_WALLS_TYPE = RenderType.create(
+            MOD_ID + ":filled_through_walls",
+            RenderSetup.builder(FILLED_THROUGH_WALLS).createRenderSetup()
+    );
 
     private static boolean enabled = true; // block entity highlights
     private static int range = 64;         // blocks
 
-    /** Immutable data collected in the extraction phase and used in the drawing phase. */
+    /** Immutable data collected in the extraction phase and used when submitting geometry. */
     private record BoxState(double minX, double minY, double minZ,
                             double maxX, double maxY, double maxZ,
                             float r, float g, float b) { }
@@ -125,8 +118,7 @@ public class BEVisionClient implements ClientModInitializer {
         });
 
         LevelExtractionEvents.END_EXTRACTION.register(BEVisionClient::extract);
-        LevelRenderEvents.AFTER_TRANSLUCENT_TERRAIN.register(BEVisionClient::renderAndDraw);
-        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> STAGED_BUFFER.close());
+        LevelRenderEvents.COLLECT_SUBMITS.register(BEVisionClient::collect);
     }
 
     private static KeyMapping key(String translationKey, int code, KeyMapping.Category category) {
@@ -209,106 +201,67 @@ public class BEVisionClient implements ClientModInitializer {
         boxes = out;
     }
 
-    // ---------------------------------------------------------------- drawing phase
+    // ---------------------------------------------------------------- submit phase
 
-    private static void renderAndDraw(LevelRenderContext context) {
+    private static void collect(LevelRenderContext context) {
         List<BoxState> list = boxes;
         if (list.isEmpty()) return;
 
-        RenderPipeline pipeline = FILLED_THROUGH_WALLS;
-        VertexFormat formatBinding = pipeline.getVertexFormatBinding(0);
-        if (formatBinding == null) return;
-
-        PrimitiveTopology primitive = pipeline.getPrimitiveTopology();
-        StagedVertexBuffer.Draw draw = STAGED_BUFFER.appendDraw(formatBinding, primitive,
-                primitive == PrimitiveTopology.QUADS ? RenderSystem.getProjectionType().vertexSorting() : null);
-
+        PoseStack poseStack = context.poseStack();
         Vec3 cam = context.levelState().cameraRenderState.pos;
-        Matrix4fc pose = context.poseStack().last().pose();
-        VertexConsumer builder = STAGED_BUFFER.getVertexBuilder(draw);
+        SubmitNodeCollector collector = context.submitNodeCollector();
 
-        int count = 0;
-        for (BoxState b : list) {
-            if (count++ >= MAX_BOXES_DRAWN) break;
-            // Subtract the camera in double precision first so far-away boxes don't jitter.
-            addFilledBox(pose, builder,
-                    (float) (b.minX() - cam.x), (float) (b.minY() - cam.y), (float) (b.minZ() - cam.z),
-                    (float) (b.maxX() - cam.x), (float) (b.maxY() - cam.y), (float) (b.maxZ() - cam.z),
-                    b.r(), b.g(), b.b(), ALPHA);
-        }
-
-        STAGED_BUFFER.upload();
-
-        StagedVertexBuffer.ExecuteInfo info = STAGED_BUFFER.getExecuteInfo(draw);
-        if (info != null) {
-            drawPass(Minecraft.getInstance(), info, pipeline);
-        }
-
-        STAGED_BUFFER.endFrame();
+        collector.submitCustomGeometry(poseStack, THROUGH_WALLS_TYPE, (pose, buffer) -> {
+            int count = 0;
+            for (BoxState b : list) {
+                if (count++ >= MAX_BOXES_DRAWN) break;
+                // Subtract the camera in double precision first so far-away boxes don't jitter.
+                addFilledBox(pose, buffer,
+                        (float) (b.minX() - cam.x), (float) (b.minY() - cam.y), (float) (b.minZ() - cam.z),
+                        (float) (b.maxX() - cam.x), (float) (b.maxY() - cam.y), (float) (b.maxZ() - cam.z),
+                        b.r(), b.g(), b.b(), ALPHA);
+            }
+        });
     }
 
-    private static void addFilledBox(Matrix4fc m, VertexConsumer buffer,
+    private static void addFilledBox(PoseStack.Pose p, VertexConsumer buffer,
                                      float minX, float minY, float minZ,
                                      float maxX, float maxY, float maxZ,
                                      float red, float green, float blue, float alpha) {
         // Front face
-        buffer.addVertex(m, minX, minY, maxZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, minY, maxZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, maxY, maxZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, minX, maxY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, minY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, minY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, maxY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, maxY, maxZ).setColor(red, green, blue, alpha);
 
         // Back face
-        buffer.addVertex(m, maxX, minY, minZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, minX, minY, minZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, minX, maxY, minZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, maxY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, minY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, minY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, maxY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, maxY, minZ).setColor(red, green, blue, alpha);
 
         // Left face
-        buffer.addVertex(m, minX, minY, minZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, minX, minY, maxZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, minX, maxY, maxZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, minX, maxY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, minY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, minY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, maxY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, maxY, minZ).setColor(red, green, blue, alpha);
 
         // Right face
-        buffer.addVertex(m, maxX, minY, maxZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, minY, minZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, maxY, minZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, maxY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, minY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, minY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, maxY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, maxY, maxZ).setColor(red, green, blue, alpha);
 
         // Top face
-        buffer.addVertex(m, minX, maxY, maxZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, maxY, maxZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, maxY, minZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, minX, maxY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, maxY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, maxY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, maxY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, maxY, minZ).setColor(red, green, blue, alpha);
 
         // Bottom face
-        buffer.addVertex(m, minX, minY, minZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, minY, minZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, maxX, minY, maxZ).setColor(red, green, blue, alpha);
-        buffer.addVertex(m, minX, minY, maxZ).setColor(red, green, blue, alpha);
-    }
-
-    private static void drawPass(Minecraft client, StagedVertexBuffer.ExecuteInfo info, RenderPipeline pipeline) {
-        GpuBufferSlice dynamicTransforms = RenderSystem.getDynamicUniforms()
-                .writeTransform(RenderSystem.getModelViewMatrixCopy(), COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX);
-
-        RenderTarget mainTarget = client.gameRenderer.mainRenderTarget();
-        GpuTextureView colorTexture = mainTarget.getColorTextureView();
-        if (colorTexture == null) return;
-
-        try (RenderPass renderPass = RenderSystem.getDevice()
-                .createCommandEncoder()
-                .createRenderPass(() -> MOD_ID + " block vision rendering", colorTexture,
-                        Optional.empty(), mainTarget.getDepthTextureView(), OptionalDouble.empty())) {
-            renderPass.setPipeline(RenderSystem.getCompiledPipeline(pipeline));
-
-            RenderSystem.bindDefaultUniforms(renderPass);
-            renderPass.setUniform("DynamicTransforms", dynamicTransforms);
-
-            renderPass.setVertexBuffer(0, info.vertexBuffer().slice());
-            renderPass.setIndexBuffer(info.indexBuffer(), info.indexType());
-
-            renderPass.drawIndexed(info.indexCount(), 1, info.firstIndex(), info.baseVertex(), 0);
-        }
+        buffer.addVertex(p, minX, minY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, minY, minZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, maxX, minY, maxZ).setColor(red, green, blue, alpha);
+        buffer.addVertex(p, minX, minY, maxZ).setColor(red, green, blue, alpha);
     }
 }
