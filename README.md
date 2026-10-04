@@ -1,6 +1,8 @@
-# Block Entity Vision 1.1.0 (Fabric, Minecraft 1.21.4, client-side)
+# Block Entity Vision 1.2.0 (Fabric, Minecraft 26.3, client-side)
 
 Highlights things through walls, and lets you find any block from a menu.
+
+Needs: Minecraft 26.3, Fabric Loader 0.19.5+, Fabric API 0.161.0+26.3, Java 25.
 
 ## Keys (rebindable in Controls)
 - B: open the Block Finder menu (search, click blocks to select/deselect, scroll the list)

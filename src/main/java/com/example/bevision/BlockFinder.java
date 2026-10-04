@@ -11,18 +11,20 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
-import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.world.ClientWorld;
-import net.minecraft.registry.Registries;
-import net.minecraft.util.math.MathHelper;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.chunk.ChunkSection;
-import net.minecraft.world.chunk.WorldChunk;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.phys.Vec3;
 
 /**
- * Keeps the set of blocks the user picked in the menu and scans loaded chunks for them.
+ * Keeps the set of blocks picked in the menu and scans loaded chunks for them.
  * The scan is spread over many ticks so it never freezes the game.
  */
 public final class BlockFinder {
@@ -32,7 +34,7 @@ public final class BlockFinder {
 
     private record ChunkCoord(int x, int z) {}
 
-    private static final int MAX_HITS = 4000;
+    public static final int MAX_HITS = 4000;
     private static final int CHUNKS_PER_TICK = 6;
     private static final int RESCAN_DELAY_TICKS = 40;
     private static final int MAX_SCAN_RANGE = 128;
@@ -46,7 +48,7 @@ public final class BlockFinder {
     private static List<Hit> building = new ArrayList<>();
     private static Set<Block> scanTargets = Set.of();
     private static Map<Block, float[]> scanColors = Map.of();
-    private static Vec3d scanOrigin = Vec3d.ZERO;
+    private static Vec3 scanOrigin = Vec3.ZERO;
     private static double scanRangeSq = 0;
     private static boolean scanCapped = false;
     private static int cooldown = 0;
@@ -91,9 +93,9 @@ public final class BlockFinder {
 
     // ------------------------------------------------------------ scanning
 
-    public static void tick(MinecraftClient mc) {
-        ClientWorld world = mc.world;
-        if (world == null || mc.player == null || targets.isEmpty()) {
+    public static void tick(Minecraft mc) {
+        ClientLevel level = mc.level;
+        if (level == null || mc.player == null || targets.isEmpty()) {
             if (!results.isEmpty()) results = List.of();
             queue.clear();
             return;
@@ -108,7 +110,7 @@ public final class BlockFinder {
         }
 
         for (int i = 0; i < CHUNKS_PER_TICK && !queue.isEmpty(); i++) {
-            scanChunk(world, queue.poll());
+            scanChunk(level, queue.poll());
         }
 
         if (queue.isEmpty()) {
@@ -118,26 +120,26 @@ public final class BlockFinder {
         }
     }
 
-    private static void startScan(MinecraftClient mc) {
+    private static void startScan(Minecraft mc) {
         scanTargets = new HashSet<>(targets);
         scanColors = new HashMap<>();
         for (Block b : scanTargets) {
-            int hash = Registries.BLOCK.getId(b).hashCode();
-            float hue = ((hash & 0xFFFF) / 65535f);
-            int rgb = MathHelper.hsvToRgb(hue, 0.85f, 1.0f);
+            int hash = BuiltInRegistries.BLOCK.getKey(b).hashCode();
+            float hue = (hash & 0xFFFF) / 65535f;
+            int rgb = Mth.hsvToRgb(hue, 0.85f, 1.0f);
             scanColors.put(b, new float[]{
                     ((rgb >> 16) & 255) / 255f, ((rgb >> 8) & 255) / 255f, (rgb & 255) / 255f});
         }
 
         building = new ArrayList<>();
         scanCapped = false;
-        scanOrigin = mc.player.getPos();
+        scanOrigin = mc.player.position();
         int range = Math.min(BEVisionClient.getRange(), MAX_SCAN_RANGE);
         scanRangeSq = (double) range * range;
 
         int chunkRadius = (range >> 4) + 1;
-        int pcx = mc.player.getBlockPos().getX() >> 4;
-        int pcz = mc.player.getBlockPos().getZ() >> 4;
+        int pcx = mc.player.blockPosition().getX() >> 4;
+        int pcz = mc.player.blockPosition().getZ() >> 4;
 
         List<ChunkCoord> coords = new ArrayList<>();
         for (int dx = -chunkRadius; dx <= chunkRadius; dx++) {
@@ -152,18 +154,19 @@ public final class BlockFinder {
         queue.addAll(coords);
     }
 
-    private static void scanChunk(ClientWorld world, ChunkCoord cc) {
-        WorldChunk chunk = world.getChunkManager().getWorldChunk(cc.x(), cc.z());
-        if (chunk == null || scanCapped) return;
+    private static void scanChunk(ClientLevel level, ChunkCoord cc) {
+        if (scanCapped) return;
+        ChunkAccess access = level.getChunkSource().getChunk(cc.x(), cc.z(), ChunkStatus.FULL, false);
+        if (!(access instanceof LevelChunk chunk)) return;
 
         Predicate<BlockState> wanted = state -> scanTargets.contains(state.getBlock());
-        ChunkSection[] sections = chunk.getSectionArray();
+        LevelChunkSection[] sections = chunk.getSections();
 
         for (int i = 0; i < sections.length; i++) {
-            ChunkSection section = sections[i];
-            if (section == null || section.isEmpty() || !section.hasAny(wanted)) continue;
+            LevelChunkSection section = sections[i];
+            if (section == null || section.hasOnlyAir() || !section.maybeHas(wanted)) continue;
 
-            int baseY = (chunk.getBottomSectionCoord() + i) << 4;
+            int baseY = (chunk.getMinSectionY() + i) << 4;
 
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {

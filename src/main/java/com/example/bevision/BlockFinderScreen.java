@@ -4,14 +4,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-import net.minecraft.block.Block;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.client.gui.widget.TextFieldWidget;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.text.Text;
+import com.mojang.blaze3d.platform.InputConstants;
+
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Block;
 
 /** Search box + scrollable block list. Click a block to toggle it on or off. */
 public class BlockFinderScreen extends Screen {
@@ -22,15 +25,15 @@ public class BlockFinderScreen extends Screen {
     private static List<Block> allBlocks;
 
     private final List<Block> filtered = new ArrayList<>();
-    private TextFieldWidget search;
+    private EditBox search;
     private int scroll = 0;
 
     public BlockFinderScreen() {
-        super(Text.literal("Block Finder"));
+        super(Component.literal("Block Finder"));
         if (allBlocks == null) {
             allBlocks = new ArrayList<>();
-            for (Block b : Registries.BLOCK) {
-                if (!b.getDefaultState().isAir()) allBlocks.add(b);
+            for (Block b : BuiltInRegistries.BLOCK) {
+                if (!b.defaultBlockState().isAir()) allBlocks.add(b);
             }
             allBlocks.sort((a, b) -> a.getName().getString().compareToIgnoreCase(b.getName().getString()));
         }
@@ -40,29 +43,29 @@ public class BlockFinderScreen extends Screen {
     protected void init() {
         int cx = this.width / 2;
 
-        search = new TextFieldWidget(this.textRenderer, cx - LIST_W / 2, 22, LIST_W, 18, Text.literal("Search"));
+        search = new EditBox(this.font, cx - LIST_W / 2, 22, LIST_W, 18, Component.literal("Search"));
         search.setMaxLength(64);
-        search.setPlaceholder(Text.literal("Search blocks (e.g. diamond ore)..."));
-        search.setChangedListener(s -> refilter());
-        this.addDrawableChild(search);
+        search.setHint(Component.literal("Search blocks (e.g. diamond ore)..."));
+        search.setResponder(s -> refilter());
+        this.addRenderableWidget(search);
         this.setInitialFocus(search);
 
-        this.addDrawableChild(ButtonWidget.builder(Text.literal("Clear all"), b -> BlockFinder.clear())
-                .dimensions(cx - LIST_W / 2, this.height - 28, 118, 20).build());
-        this.addDrawableChild(ButtonWidget.builder(Text.literal("Done"), b -> this.close())
-                .dimensions(cx + 2, this.height - 28, 118, 20).build());
+        this.addRenderableWidget(Button.builder(Component.literal("Clear all"), b -> BlockFinder.clear())
+                .bounds(cx - LIST_W / 2, this.height - 28, 118, 20).build());
+        this.addRenderableWidget(Button.builder(Component.literal("Done"), b -> this.onClose())
+                .bounds(cx + 2, this.height - 28, 118, 20).build());
 
         refilter();
     }
 
     private void refilter() {
         filtered.clear();
-        String q = search == null ? "" : search.getText().toLowerCase(Locale.ROOT).trim();
+        String q = search == null ? "" : search.getValue().toLowerCase(Locale.ROOT).trim();
         String qId = q.replace(' ', '_');
         for (Block b : allBlocks) {
             if (q.isEmpty()
                     || b.getName().getString().toLowerCase(Locale.ROOT).contains(q)
-                    || Registries.BLOCK.getId(b).getPath().contains(qId)) {
+                    || BuiltInRegistries.BLOCK.getKey(b).getPath().contains(qId)) {
                 filtered.add(b);
             }
         }
@@ -77,11 +80,15 @@ public class BlockFinderScreen extends Screen {
         return Math.max(0, filtered.size() - visibleRows());
     }
 
-    @Override
-    public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
-        super.render(ctx, mouseX, mouseY, delta); // background + search box + buttons
+    private void centered(GuiGraphicsExtractor graphics, Component text, int centerX, int y, int color) {
+        graphics.text(this.font, text, centerX - this.font.width(text) / 2, y, color, true);
+    }
 
-        ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal("Block Finder"), this.width / 2, 8, 0xFFFFFFFF);
+    @Override
+    public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
+        super.extractRenderState(graphics, mouseX, mouseY, delta); // background, search box, buttons
+
+        centered(graphics, Component.literal("Block Finder"), this.width / 2, 8, 0xFFFFFFFF);
 
         int x = this.width / 2 - LIST_W / 2;
         int rows = visibleRows();
@@ -96,42 +103,44 @@ public class BlockFinderScreen extends Screen {
             boolean hover = mouseX >= x && mouseX < x + LIST_W && mouseY >= y && mouseY < y + ROW_H - 1;
 
             int bg = selected ? 0xA040A040 : (hover ? 0x80808080 : 0x70000000);
-            ctx.fill(x, y, x + LIST_W, y + ROW_H - 1, bg);
-            ctx.drawItem(new ItemStack(b.asItem()), x + 2, y + 1);
-            ctx.drawTextWithShadow(this.textRenderer, b.getName(), x + 24, y + 6,
-                    selected ? 0xFFFFFF55 : 0xFFFFFFFF);
+            graphics.fill(x, y, x + LIST_W, y + ROW_H - 1, bg);
+            graphics.item(new ItemStack(b.asItem()), x + 2, y + 1);
+            graphics.text(this.font, b.getName(), x + 24, y + 6, selected ? 0xFFFFFF55 : 0xFFFFFFFF, true);
         }
 
         if (filtered.isEmpty()) {
-            ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal("No blocks match"),
-                    this.width / 2, LIST_TOP + 10, 0xFFAAAAAA);
+            centered(graphics, Component.literal("No blocks match"), this.width / 2, LIST_TOP + 10, 0xFFAAAAAA);
         }
 
         String footer = BlockFinder.selectedCount() + " selected";
-        if (BlockFinder.isCapped()) footer += "  (too many matches, showing the nearest 4000)";
-        ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(footer),
-                this.width / 2, this.height - 42, 0xFFAAAAAA);
+        if (BlockFinder.isCapped()) {
+            footer += "  (too many matches, showing the nearest " + BlockFinder.MAX_HITS + ")";
+        }
+        centered(graphics, Component.literal(footer), this.width / 2, this.height - 42, 0xFFAAAAAA);
     }
 
     @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+    public boolean mouseClicked(MouseButtonEvent event, boolean doubleClick) {
+        double mx = event.x();
+        double my = event.y();
         int x = this.width / 2 - LIST_W / 2;
         int rows = visibleRows();
 
-        if (button == 0 && mouseX >= x && mouseX < x + LIST_W
-                && mouseY >= LIST_TOP && mouseY < LIST_TOP + rows * ROW_H) {
-            int idx = scroll + (int) ((mouseY - LIST_TOP) / ROW_H);
+        if (event.button() == InputConstants.MOUSE_BUTTON_LEFT
+                && mx >= x && mx < x + LIST_W
+                && my >= LIST_TOP && my < LIST_TOP + rows * ROW_H) {
+            int idx = scroll + (int) ((my - LIST_TOP) / ROW_H);
             if (idx >= 0 && idx < filtered.size()) {
                 BlockFinder.toggle(filtered.get(idx));
                 return true;
             }
         }
-        return super.mouseClicked(mouseX, mouseY, button);
+        return super.mouseClicked(event, doubleClick);
     }
 
     @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
-        scroll = Math.max(0, Math.min(maxScroll(), scroll - (int) Math.signum(verticalAmount) * 2));
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        scroll = Math.max(0, Math.min(maxScroll(), scroll - (int) Math.signum(scrollY) * 2));
         return true;
     }
 }
