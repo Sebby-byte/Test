@@ -1,19 +1,23 @@
-# Block Entity Vision 1.2.0 (Fabric, Minecraft 26.3, client-side)
+# Auto Attack 1.2.0 (Fabric, Minecraft 26.3, client-side)
 
-Highlights things through walls, and lets you find any block from a menu.
+Two toggleable features, for hostile mobs and other players (never animals):
+
+- **Auto Click** (V): presses your Attack key (left click) while your crosshair is on a hostile
+  mob or another player within normal reach. Waits for the attack cooldown. Sends no attack commands of its own.
+- **Auto Rotate** (R): turns your view toward the nearest hostile mob or player within the set range (1-45 blocks, default 6) that you
+  have a clear line of sight to.
+- **Settings** (U): toggle buttons plus a slider for rotation speed (1 to 45 degrees per tick,
+  default 10). The slider value is saved.
+
+Both features start OFF every launch. Keys are rebindable in Controls.
+
+## Where it works
+- Singleplayer: always.
+- Multiplayer: only servers listed in `allowedServers` in `config/autoattack.properties`
+  (default: localhost, 127.0.0.1). Anywhere else it refuses to turn on.
+
+On a multiplayer server, press U and click **Allow this server** (no file editing needed), or edit the file by hand.
+
+Only use this where automation is explicitly permitted. Most public servers prohibit it.
 
 Needs: Minecraft 26.3, Fabric Loader 0.19.5+, Fabric API 0.161.0+26.3, Java 25.
-
-## Keys (rebindable in Controls)
-- B: open the Block Finder menu (search, click blocks to select/deselect, scroll the list)
-- G: toggle the automatic block entity highlights (chests, furnaces, spawners...)
-- = / -: range +/- 16 blocks (16 to 256, default 64; block search is capped at 128)
-
-## Block Finder
-Selected blocks are highlighted in their own color. Pick as many as you like.
-"Clear all" removes every selection. Very common blocks (stone, dirt) will hit a
-4000-block limit, and only the nearest matches are shown.
-
-## Build with GitHub Actions
-Push this folder to a GitHub repo (including .github/workflows/build.yml). The Actions tab
-builds it and publishes the jar as the "bevision-jar" artifact.

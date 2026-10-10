@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "id": "bevision",
+  "id": "autoattack",
   "version": "${version}",
-  "name": "Block Entity Vision",
-  "description": "Highlights block entities and any blocks you pick from a menu, through walls. Client side only.",
+  "name": "Auto Attack",
+  "description": "Auto-click and auto-rotate toward hostile mobs, with an adjustable rotation speed slider. Client side only.",
   "authors": ["You"],
   "license": "MIT",
   "environment": "client",
   "entrypoints": {
-    "client": ["com.example.bevision.BEVisionClient"]
+    "client": ["com.example.autoattack.AutoAttackClient"]
   },
   "depends": {
     "fabricloader": ">=0.19.1",
